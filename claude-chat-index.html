@@ -1,0 +1,325 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>Claude Chat</title>
+   <style>
+       body {
+           font-family: Arial, sans-serif;
+           margin: 0;
+           padding: 20px;
+           background-color: #f0f0f0;
+       }
+
+       /* Контейнеры */
+       .container {
+           display: flex;
+           gap: 20px;
+           max-width: 1200px;
+           margin: 0 auto;
+       }
+
+       .chat-container {
+           flex: 1;
+           background: white;
+           border-radius: 8px;
+           padding: 20px;
+           box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+           display: flex;
+           flex-direction: column;
+           height: 80vh;
+       }
+
+       .terminal-container {
+           flex: 1;
+           background: #1e1e1e;
+           border-radius: 8px;
+           padding: 20px;
+           box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+           display: flex;
+           flex-direction: column;
+           height: 80vh;
+           color: white;
+       }
+
+       /* Чат */
+       .chat-history {
+           flex: 1;
+           overflow-y: auto;
+           margin-bottom: 20px;
+           padding: 10px;
+           border: 1px solid #ddd;
+           border-radius: 4px;
+       }
+
+       .message {
+           margin-bottom: 15px;
+           padding: 10px;
+           background: #f8f9fa;
+           border-radius: 4px;
+           white-space: pre-wrap;
+       }
+
+       .user-message {
+           background: #e3f2fd;
+       }
+
+       .assistant-message {
+           background: #f5f5f5;
+       }
+
+       .message-text {
+           font-family: 'Consolas', monospace;
+           display: block;
+           margin-top: 5px;
+           line-height: 1.5;
+       }
+
+       .timestamp {
+           color: #666;
+           font-size: 0.8em;
+       }
+
+       /* Элементы управления */
+       .controls {
+           margin-bottom: 15px;
+           display: flex;
+           align-items: center;
+           gap: 15px;
+       }
+
+       textarea {
+           width: 100%;
+           min-height: 100px;
+           padding: 10px;
+           border: 1px solid #ddd;
+           border-radius: 4px;
+           resize: vertical;
+           font-family: 'Consolas', monospace;
+       }
+
+       button {
+           padding: 10px 20px;
+           border: none;
+           border-radius: 4px;
+           cursor: pointer;
+       }
+
+       #newChatBtn {
+           background: #28a745;
+           color: white;
+       }
+
+       #sendButton {
+           background: #007bff;
+           color: white;
+       }
+
+       /* Терминал */
+       .terminal-output {
+           flex: 1;
+           background: #1e1e1e;
+           color: white;
+           font-family: 'Consolas', monospace;
+           padding: 10px;
+           overflow-y: auto;
+           white-space: pre-wrap;
+           margin-bottom: 10px;
+       }
+
+       .terminal-input {
+           display: flex;
+           align-items: center;
+           gap: 5px;
+       }
+
+       .terminal-input input {
+           flex: 1;
+           background: #2d2d2d;
+           border: none;
+           color: white;
+           font-family: 'Consolas', monospace;
+           padding: 5px;
+       }
+   </style>
+</head>
+<body>
+   <div class="container">
+       <div class="chat-container">
+           <h1>Claude Chat</h1>
+           <div class="controls">
+               <button id="newChatBtn">Новый чат</button>
+               <label>
+                   <input type="checkbox" id="executeMode" checked>
+                   Выполнять команды PowerShell автоматически
+               </label>
+           </div>
+           <div class="chat-history" id="chatHistory"></div>
+           <div id="loading" style="display: none;">Получаем ответ...</div>
+           <div class="char-count" id="charCount">0 / 300</div>
+           <textarea 
+               id="userInput" 
+               placeholder="Введите ваш вопрос (максимум 300 символов)..."
+               maxlength="300"
+               oninput="updateCharCount(this)"
+           ></textarea>
+           <button id="sendButton">Отправить</button>
+       </div>
+       
+       <div class="terminal-container">
+           <h2>PowerShell</h2>
+           <div class="terminal-output" id="terminalOutput">PS G:\AWS\2v-AWS></div>
+           <div class="terminal-input">
+               <span>></span>
+               <input 
+                   type="text" 
+                   id="terminalInput"
+                   placeholder="Введите команду..."
+               >
+           </div>
+       </div>
+   </div>
+
+   <script>
+       // URL Lambda функции
+       const LAMBDA_URL = 'https://olskxzp5le2jk56tucac7oxne40mwqmu.lambda-url.us-west-2.on.aws';
+       
+       // Инициализация элементов
+       const chatHistory = document.getElementById('chatHistory');
+       const userInput = document.getElementById('userInput');
+       const sendButton = document.getElementById('sendButton');
+       const loading = document.getElementById('loading');
+       const charCount = document.getElementById('charCount');
+       const executeMode = document.getElementById('executeMode');
+       const terminalOutput = document.getElementById('terminalOutput');
+       const terminalInput = document.getElementById('terminalInput');
+       const newChatBtn = document.getElementById('newChatBtn');
+
+       // Глобальная история чата
+       window.chatHistory = [];
+
+       async function sendMessage() {
+           const prompt = userInput.value.trim();
+           if (!prompt) return;
+
+           // Добавляем сообщение пользователя
+           const userTimestamp = getTimestamp();
+           appendMessage(prompt, userTimestamp, true);
+           
+           // Очищаем поле ввода
+           userInput.value = '';
+           updateCharCount(userInput);
+           
+           // Показываем индикатор загрузки
+           sendButton.disabled = true;
+           loading.style.display = 'block';
+
+           try {
+               const response = await fetch(LAMBDA_URL, {
+                   method: 'POST',
+                   headers: {
+                       'Content-Type': 'application/json'
+                   },
+                   body: JSON.stringify({
+                       prompt: prompt,
+                       history: window.chatHistory
+                   })
+               });
+
+               if (!response.ok) {
+                   throw new Error(`HTTP error! status: ${response.status}`);
+               }
+
+               const data = await response.json();
+               
+               if (data.error) {
+                   appendMessage(`Error: ${data.error}`, getTimestamp(), false);
+               } else {
+                   // Обновляем историю
+                   window.chatHistory.push(
+                       { role: "user", content: prompt },
+                       { role: "assistant", content: data.response }
+                   );
+                   
+                   // Ограничиваем историю
+                   if (window.chatHistory.length > 20) {
+                       window.chatHistory = window.chatHistory.slice(-20);
+                   }
+                   
+                   // Добавляем ответ
+                   appendMessage(data.response, getTimestamp(), false);
+               }
+
+           } catch (error) {
+               console.error('Error:', error);
+               appendMessage(`Error: ${error.message}`, getTimestamp(), false);
+           } finally {
+               sendButton.disabled = false;
+               loading.style.display = 'none';
+           }
+       }
+
+       function appendMessage(text, timestamp, isUser) {
+           const div = document.createElement('div');
+           div.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
+           
+           const timeSpan = document.createElement('span');
+           timeSpan.className = 'timestamp';
+           timeSpan.textContent = timestamp;
+           div.appendChild(timeSpan);
+
+           const textSpan = document.createElement('span');
+           textSpan.className = 'message-text';
+           textSpan.textContent = text;
+           div.appendChild(textSpan);
+
+           chatHistory.appendChild(div);
+           chatHistory.scrollTop = chatHistory.scrollHeight;
+       }
+
+       function getTimestamp() {
+           return new Date().toLocaleTimeString();
+       }
+
+       function updateCharCount(textarea) {
+           charCount.textContent = `${textarea.value.length} / 300`;
+       }
+
+       function clearChat() {
+           chatHistory.innerHTML = '';
+           window.chatHistory = [];
+           appendMessage('Новый чат начат. Чем могу помочь?', getTimestamp(), false);
+       }
+
+       // Event listeners
+       sendButton.addEventListener('click', sendMessage);
+       
+       userInput.addEventListener('keydown', (e) => {
+           if (e.key === 'Enter' && !e.shiftKey) {
+               e.preventDefault();
+               sendMessage();
+           }
+       });
+
+       newChatBtn.addEventListener('click', clearChat);
+
+       terminalInput.addEventListener('keydown', async (e) => {
+           if (e.key === 'Enter') {
+               const command = terminalInput.value;
+               if (command) {
+                   terminalOutput.textContent += `\n> ${command}\n`;
+                   terminalInput.value = '';
+                   // Здесь можно добавить выполнение команд
+               }
+           }
+       });
+
+       // Инициализация
+       window.onload = () => {
+           clearChat();
+           userInput.focus();
+       };
+   </script>
+</body>
+</html>
